@@ -1,0 +1,222 @@
+# TLS Sweeper
+
+TLS Sweeper (`tls_sweeper.sh`) is a fast, portable Bash tool for liveness checks and TLS protocol policy validation across many hosts. It can operate in two modes:
+
+- Manual scanning of a primary port plus fallbacks (e.g., 443 and 8443,4443,3389)
+- Discovery-driven scanning that first finds active hosts, enumerates their open ports, then runs TLS checks on the relevant ports
+
+The script writes a CSV with per host:port results and prints a concise, colorized summary.
+
+---
+
+## Key Features
+
+- Liveness detection with `ping`, then fallback to `nmap` host discovery
+- Port openness detection via `nc` (netcat) when available, with `nmap` fallback
+- TLS protocol detection using a tiered approach:
+  - `testssl.sh` (preferred)
+  - `nmap --script ssl-enum-ciphers`
+  - `openssl s_client`
+- Discovery mode (-D):
+  - Step 1: Identify active hosts
+  - Step 2: Enumerate open ports on those hosts (fast connect scan)
+  - Step 3: Compute unique ports across all hosts and use them for TLS checks per host (re-validating port openness per host)
+- RDP (3389) aware: detects TLS versions via `nmap --script rdp-enum-encryption`
+- Concurrency across hosts with a simple background job semaphore
+- Robust CSV output + summary footer with PASS/FAIL/NO_TLS counts and unique open ports
+- Interactive controls (pause/resume/quit) and signal handling
+
+---
+
+## Requirements
+
+- macOS or Linux with Bash (tested on macOS’s Bash 3.2)
+- Tools (auto-detected):
+  - `nmap` (recommended for discovery and TLS enumeration)
+  - `testssl.sh` (recommended for fast protocol checks)
+  - `openssl`
+  - `nc` (netcat)
+
+Install on macOS (Homebrew examples):
+
+```bash
+brew install nmap
+brew install testssl
+# openssl and nc are typically bundled; install as needed
+```
+
+---
+
+## Usage
+
+Basic help:
+
+```bash
+./tls_sweeper.sh -h
+```
+
+Manual mode (primary + fallbacks):
+
+```bash
+# Scan 443. If closed, try 8443,4443,3389
+./tls_sweeper.sh -f targets.txt -p 443 -P 8443,4443,3389 -c 16
+```
+
+Discovery mode (large range):
+
+```bash
+# Find active hosts, enumerate open ports across 1-65535, TLS-check the unique ports on each active host
+./tls_sweeper.sh -f targets.txt -D -R "1-65535" -c 16
+```
+
+Discovery mode (top-N ports):
+
+```bash
+# Use top 2000 TCP ports (default if -R not provided)
+./tls_sweeper.sh -f targets.txt -D -t 2000 -c 16
+```
+
+Another example:
+
+```bash
+./tls_sweeper.sh -f i1497.txt -P 443,8443,3389 -c 16
+```
+
+Output file:
+
+- A timestamped CSV is written to the current directory, e.g. `scan_results_YYYYMMDD_HHMMSS.csv`.
+
+---
+
+## CSV Columns
+
+```
+timestamp,host,port,alive,tls_status,versions,tool,details
+```
+
+- `alive`: "alive" or "inactive"
+- `tls_status`: one of
+  - `PASS` — Only TLS1.2 and/or TLS1.3 detected
+  - `FAIL` — Any weak protocol detected (SSLv2, SSLv3, TLS1.0, TLS1.1)
+  - `NO_TLS` — TCP service responded but TLS negotiation not detected
+  - `PORT_CLOSED` — Port not open on that host
+  - `NO_SERVICE` — No candidate ports to check
+- `versions`: Comma-separated list (e.g., `SSLv3,TLS1.0,TLS1.1,TLS1.2`)
+- `tool`: Which detector produced the versions (`testssl.sh`, `nmap ssl-enum-ciphers`, `openssl s_client`, or `nmap rdp-enum-encryption` for 3389)
+
+The summary footer also prints:
+
+- `PASS`, `FAIL`, `NO_TLS` counts
+- `PORT_OPEN`: total ports that responded to TLS checks (PASS|FAIL|NO_TLS)
+- `OPEN PORTS`: unique port numbers observed open across all hosts
+
+---
+
+## Discovery Mode Details (-D)
+
+Global discovery (done once per run):
+
+1. Active hosts
+   - Uses `is_alive()` (ping, then nmap host discovery) to filter the input list
+   - Writes active hosts to a temp file: `/tmp/tls_sweeper.XXXXXXXX/active.txt`
+2. Open ports on active hosts
+   - For each active host, runs `nmap -Pn -n --open -sT -T4` over your selected range (`-R` or `-t`)
+   - Appends `host,port` lines to `/tmp/tls_sweeper.XXXXXXXX/ports.txt`
+3. Unique ports across all hosts
+   - Extracts a unique, sorted, comma-separated port list for the TLS-check phase
+
+Per-host TLS checks:
+
+- Logs that host’s discovered open ports
+- TLS-checks the global unique port set, validating `port_open` for the specific host before attempting TLS
+- Writes `PORT_CLOSED` rows for global ports not open on that host
+
+Temp files are cleaned on exit. If you need to inspect them, copy them before the run finishes.
+
+---
+
+## Keyboard Controls and Signals
+
+Interactive keys (when the script is run in a terminal):
+
+- `p` — Pause (halts scheduling, SIGSTOPs running background scans)
+- `r` — Resume (re-enables scheduling, SIGCONT to paused jobs)
+- `q` — Quit gracefully (stops jobs, prints summary)
+
+Signals:
+
+- `INT`/Ctrl-C — Graceful stop, print summary
+- `TERM` — Graceful stop, print summary
+- `USR1` — Pause (same as `p`)
+- `USR2` — Resume (same as `r`)
+
+---
+
+## Tuning and Environment
+
+- Concurrency: `-c N` (default: 8)
+- Timeouts:
+  - `DISCOVER_TIMEOUT` (default: 45s) — host-level discovery scans
+  - `NMAP_TIMEOUT` (default: 7s) — single port checks and scripts
+  - `SCRIPT_TIMEOUT` (default: 8s) — nmap script timeout
+- You can override these by exporting environment variables before the run, e.g.:
+
+```bash
+DISCOVER_TIMEOUT=90s NMAP_TIMEOUT=15s SCRIPT_TIMEOUT=20s \
+  ./tls_sweeper.sh -f targets.txt -D -R "1-65535" -c 16
+```
+
+---
+
+## Examples
+
+Scan common HTTPS alternatives with concurrency:
+
+```bash
+./tls_sweeper.sh -f targets.txt -p 443 -P 8443,4443,3389 -c 32
+```
+
+Full-port-range discovery followed by TLS checks:
+
+```bash
+./tls_sweeper.sh -f targets.txt -D -R "1-65535" -c 16
+```
+
+Limit discovery to top 2000 ports:
+
+```bash
+./tls_sweeper.sh -f targets.txt -D -t 2000 -c 16
+```
+
+Quiet mode for minimal stdout:
+
+```bash
+./tls_sweeper.sh -f targets.txt -q
+```
+
+---
+
+## Troubleshooting
+
+- No open ports found (discovery):
+  - Verify `nmap` is installed and on PATH
+  - Increase `DISCOVER_TIMEOUT` and `-T`/timing to accommodate slow networks
+  - Try a smaller set/range first (`-t 2000` or `-R "80,443,3389"`)
+- TLS shows `NO_TLS` on expected services:
+  - The service might require SNI/ALPN or not speak TLS on that port
+  - Ensure `testssl.sh` is installed; it often yields better protocol detection
+- Summary shows `OPEN PORTS: <none>`:
+  - Means no ports produced TLS checks (PASS|FAIL|NO_TLS). Check logs to ensure discovery found open ports and host ports were validated with `port_open()`.
+
+---
+
+## Notes
+
+- This script is designed to run safely and portably without root by using `-sT` where possible.
+- CSV output is the source of truth; the summary is computed from it at the end (or on graceful interrupt).
+
+---
+
+## License
+
+This project is provided as-is without warranty. Review and adapt for your environment and policies.
