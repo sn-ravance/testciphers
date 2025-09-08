@@ -19,6 +19,8 @@ SCRIPT_TIMEOUT="8s"
 PING_TIMEOUT_MS="1000"                # macOS ping -W is ms
 QUIET=0
 HOSTS_FILE=""
+DETAILS=0                    # -E to save HTML reports for FAIL
+DETAILS_DIR=""
 
 # -------- Discovery (new) --------
 DISCOVER=0                   # -D to enable
@@ -55,6 +57,7 @@ Options:
   -o FILE        Output CSV (default: ${OUTPUT_FILE})
   -q             Quiet mode (less stdout)
   -D             Discovery mode: find open ports first, then test TLS on them
+  -E             Save detailed HTML reports (testssl.sh) for FAIL results
   -t N           With -D, scan top N TCP ports (default: ${TOP_PORTS})
   -R SPEC        With -D, scan a specific port set (e.g., "1-65535" or "80,443,3389");
                  overrides -t
@@ -72,6 +75,101 @@ Behavior:
 Keyboard controls (interactive runs):
   p = pause, r = resume, q = quit (graceful)
 EOF
+}
+
+# When -E is enabled, generate an HTML report with testssl.sh for FAIL cases
+ensure_details_dir() {
+  [ "$DETAILS" -eq 1 ] || return 0
+  if [ -z "$DETAILS_DIR" ]; then
+    local base
+    base="${OUTPUT_FILE%.csv}"
+    DETAILS_DIR="details/${base}"
+    mkdir -p "$DETAILS_DIR" 2>/dev/null || true
+  fi
+}
+
+save_testssl_report() {
+  [ "$DETAILS" -eq 1 ] || return 0
+  [ "$HAVE_TESTSSL" -eq 1 ] || { log warn "${ICON_WARN} Details requested but testssl.sh not found"; return 0; }
+  local host="$1" port="$2"
+  ensure_details_dir
+  local target="$host"
+  [ -n "$port" ] && [ "$port" != "-" ] && target="${host}:${port}"
+  local safe_name
+  safe_name="${host}_${port:-dash}"
+  safe_name="${safe_name//[:\/*?\"<>| ]/_}"
+  # Build absolute paths to avoid CWD confusion across subshells
+  local abs_details_dir
+  abs_details_dir="$(cd "$DETAILS_DIR" 2>/dev/null && pwd)"
+  [ -z "$abs_details_dir" ] && abs_details_dir="$DETAILS_DIR"  # fallback
+  local html_out="${abs_details_dir}/${safe_name}.html"
+  local log_out="${abs_details_dir}/${safe_name}.log"
+  log info "${ICON_INFO} Saving detailed testssl report: ${html_out}"
+  # --html creates index.html by default; prefer --htmlfile when available
+  if testssl.sh -h 2>&1 | grep -q -- '--htmlfile'; then
+    LC_ALL=C testssl.sh --htmlfile "$html_out" --hints -4 -s -p -f -E -R -U "$target" >"$log_out" 2>&1 || true
+  else
+    # Fallback: run in a temp dir and move index.html
+    local tmpd
+    tmpd=$(mktemp -d "/tmp/testssl_html.XXXXXX")
+    ( cd "$tmpd" && LC_ALL=C testssl.sh --html --hints -4 -s -p -f -E -R -U "$target" >"$log_out" 2>&1 || true )
+    # Move the first HTML report we find (testssl versions vary: index*.html or <host>_p<port>-<ts>.html)
+    local produced
+    produced=$(ls -1 "$tmpd"/index*.html 2>/dev/null | head -n 1 || true)
+    if [ -z "$produced" ]; then
+      produced=$(ls -1t "$tmpd"/*.html 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -n "$produced" ]; then
+      mv "$produced" "$html_out" 2>/dev/null || true
+    fi
+    rm -rf "$tmpd" 2>/dev/null || true
+  fi
+  # Verify output exists; if not, attempt one more time via temp dir regardless of htmlfile support
+  if [ ! -s "$html_out" ]; then
+    local tmpd2 produced2
+    tmpd2=$(mktemp -d "/tmp/testssl_html.XXXXXX")
+    ( cd "$tmpd2" && LC_ALL=C testssl.sh --html --hints -4 -s -p -f -E -R -U "$target" >>"$log_out" 2>&1 || true )
+    produced2=$(ls -1 "$tmpd2"/index*.html 2>/dev/null | head -n 1 || true)
+    if [ -z "$produced2" ]; then
+      produced2=$(ls -1t "$tmpd2"/*.html 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -n "$produced2" ]; then
+      mv "$produced2" "$html_out" 2>/dev/null || true
+    fi
+    rm -rf "$tmpd2" 2>/dev/null || true
+  fi
+  # If still no HTML, try a minimal-flag retry which is more compatible across versions
+  if [ ! -s "$html_out" ]; then
+    if testssl.sh -h 2>&1 | grep -q -- '--htmlfile'; then
+      LC_ALL=C testssl.sh --htmlfile "$html_out" -U "$target" >>"$log_out" 2>&1 || true
+    else
+      local tmpd3 produced3
+      tmpd3=$(mktemp -d "/tmp/testssl_html.XXXXXX")
+      ( cd "$tmpd3" && LC_ALL=C testssl.sh --html -U "$target" >>"$log_out" 2>&1 || true )
+      produced3=$(ls -1 "$tmpd3"/index*.html 2>/dev/null | head -n 1 || true)
+      if [ -z "$produced3" ]; then
+        produced3=$(ls -1t "$tmpd3"/*.html 2>/dev/null | head -n 1 || true)
+      fi
+      if [ -n "$produced3" ]; then
+        mv "$produced3" "$html_out" 2>/dev/null || true
+      fi
+      rm -rf "$tmpd3" 2>/dev/null || true
+    fi
+  fi
+  # As a last resort, some testssl versions write to CWD with pattern <host>_p<port>-<ts>.html
+  if [ ! -s "$html_out" ]; then
+    local cwd_html
+    cwd_html=$(ls -1t *"${host}"*p"${port}"-*.html 2>/dev/null | head -n 1 || true)
+    if [ -n "$cwd_html" ] && [ -s "$cwd_html" ]; then
+      mv "$cwd_html" "$html_out" 2>/dev/null || true
+    fi
+  fi
+  # If still nothing, save a textual fallback so the user has evidence
+  if [ ! -s "$html_out" ]; then
+    local txt_out="${DETAILS_DIR}/${safe_name}.txt"
+    log warn "${ICON_WARN} testssl HTML not produced; saving text output instead: ${txt_out} (see ${log_out} for details)"
+    LC_ALL=C testssl.sh --hints -4 -s -p -f -E -R -U "$target" > "$txt_out" 2>>"$log_out" || true
+  fi
 }
 
 # -------- Global Discovery (new workflow) --------
@@ -191,7 +289,7 @@ have_cmd openssl && HAVE_OPENSSL=1
 have_cmd nc && HAVE_NC=1
 
 # -------- Args --------
-while getopts ":f:p:P:c:o:At:R:qhD" opt; do
+while getopts ":f:p:P:c:o:At:R:qhDE" opt; do
   case "$opt" in
     f) HOSTS_FILE="$OPTARG" ;;
     p) PRIMARY_PORT="$OPTARG" ;;
@@ -203,14 +301,33 @@ while getopts ":f:p:P:c:o:At:R:qhD" opt; do
     t) TOP_PORTS="$OPTARG" ;;
     R) PORT_RANGE="$OPTARG" ;;
     q) QUIET=1 ;;
+    E) DETAILS=1 ;;
     h) usage; exit 0 ;;
-    \?) echo "Invalid option: -$OPTARG" >&2; usage; exit 2 ;;
+    \?) echo "Invalid option: -$OPTARG (use -h for help; details flag is -E or --details)" >&2; usage; exit 2 ;;
     :)  echo "Option -$OPTARG requires an argument." >&2; usage; exit 2 ;;
   esac
 done
 shift $((OPTIND-1))
 
 HOSTS=()
+
+# Pre-parse long options (strip them before getopts). Currently supports: --details
+if [ "$#" -gt 0 ]; then
+  NEWARGS=()
+  for arg in "$@"; do
+    case "$arg" in
+      --details)
+        DETAILS=1
+        ;;
+      *)
+        NEWARGS+=("$arg")
+        ;;
+    esac
+  done
+  # reset positional parameters
+  set -- "${NEWARGS[@]}"
+fi
+
 if [ -n "$HOSTS_FILE" ]; then
   [ -f "$HOSTS_FILE" ] || { echo "Host file not found: $HOSTS_FILE" >&2; exit 2; }
   while IFS= read -r line; do
@@ -680,7 +797,7 @@ scan_port_tls() {
   tls_status="$(evaluate_tls_policy "$versions")"
   case "$tls_status" in
     PASS) details="Only TLS1.2/1.3 detected"; log ok   "[${host}:${port}] ${ICON_OK} TLS: PASS (${versions})" ;;
-    FAIL) weak="$(weak_versions_only "$versions")"; details="Weaker protocol(s) detected: ${weak}"; log err  "[${host}:${port}] ${ICON_FAIL} TLS: FAIL (${weak:-$versions})" ;;
+    FAIL) weak="$(weak_versions_only "$versions")"; details="Weaker protocol(s) detected: ${weak}"; log err  "[${host}:${port}] ${ICON_FAIL} TLS: FAIL (${weak:-$versions})"; save_testssl_report "$host" "$port" ;;
     NO_TLS) details="No TLS detected on this port or detection failed"; log warn "[${host}:${port}] ${ICON_WARN} TLS: NO_TLS" ;;
   esac
   write_csv "$ts" "$host" "$port" "alive" "$tls_status" "$versions" "$tool" "$details"
@@ -848,7 +965,18 @@ for host in "${HOSTS[@]}"; do
   log info "$(printf "[%s/%s] %s %s" "$count" "$total" "$host" "$ICON_INFO")"
   # If paused, wait here until resumed
   while [ "${PAUSED:-0}" -eq 1 ]; do sleep 0.1; done
-  while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$CONCURRENCY" ]; do sleep 0.05; done
+  # Throttle based on safe, numeric concurrency and running job count
+  while :; do
+    # Number of running background jobs (default 0 if empty)
+    running_jobs=$(jobs -rp | wc -l | tr -d ' ')
+    running_jobs=${running_jobs:-0}
+    # Concurrency ceiling (default 8; coerce to 1 if non-numeric)
+    max_conc="${CONCURRENCY:-8}"
+    if ! [[ "$max_conc" =~ ^[0-9]+$ ]]; then max_conc=1; fi
+    # Proceed when below limit
+    if [ "$running_jobs" -lt "$max_conc" ]; then break; fi
+    sleep 0.05
+  done
   process_host "$host" &
 done
 wait

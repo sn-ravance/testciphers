@@ -25,6 +25,7 @@ The script writes a CSV with per host:port results and prints a concise, coloriz
 - Concurrency across hosts with a simple background job semaphore
 - Robust CSV output + summary footer with PASS/FAIL/NO_TLS counts and unique open ports
 - Interactive controls (pause/resume/quit) and signal handling
+- Optional detailed HTML reports for FAIL results via `-E` (uses testssl.sh)
 
 ---
 
@@ -62,11 +63,24 @@ Manual mode (primary + fallbacks):
 ./tls_sweeper.sh -f targets.txt -p 443 -P 8443,4443,3389 -c 16
 ```
 
+Save detailed HTML reports for FAIL findings (uses `-E`):
+
+```bash
+# For each FAIL, produce an HTML report in details/scan_results_YYYYMMDD_HHMMSS/
+./tls_sweeper.sh -f targets.txt -p 443 -P 8443,4443,3389 -c 16 -E
+```
+
 Discovery mode (large range):
 
 ```bash
 # Find active hosts, enumerate open ports across 1-65535, TLS-check the unique ports on each active host
 ./tls_sweeper.sh -f targets.txt -D -R "1-65535" -c 16
+```
+
+Discovery + detailed HTML reports on FAIL:
+
+```bash
+./tls_sweeper.sh -f targets.txt -D -R "1-65535" -c 16 -E
 ```
 
 Discovery mode (top-N ports):
@@ -80,6 +94,12 @@ Another example:
 
 ```bash
 ./tls_sweeper.sh -f i1497.txt -P 443,8443,3389 -c 16
+```
+
+Run with `-E` to save HTML reports for FAIL results:
+
+```bash
+./tls_sweeper.sh -f i1497.txt -P 443,8443,3389 -c 16 -E
 ```
 
 Output file:
@@ -110,6 +130,22 @@ The summary footer also prints:
 - `PORT_OPEN`: total ports that responded to TLS checks (PASS|FAIL|NO_TLS)
 - `OPEN PORTS`: unique port numbers observed open across all hosts
 
+When `-E` is used, additional HTML reports are saved per FAIL finding under:
+
+```
+details/scan_results_YYYYMMDD_HHMMSS/<host>_<port>.html
+```
+
+Examples of the underlying command the script runs on FAIL:
+
+```
+# For default port when not explicitly 3389:
+testssl.sh --html -4 -e -R -U <host>
+
+# For explicit port, e.g., RDP 3389:
+testssl.sh --html -4 -e -R -U <host>:3389
+```
+
 ---
 
 ## Discovery Mode Details (-D)
@@ -132,6 +168,8 @@ Per-host TLS checks:
 - Writes `PORT_CLOSED` rows for global ports not open on that host
 
 Temp files are cleaned on exit. If you need to inspect them, copy them before the run finishes.
+
+Note: `-D` in this script refers to Discovery mode. The details/HTML reports feature uses `-E` to avoid a flag conflict.
 
 ---
 
