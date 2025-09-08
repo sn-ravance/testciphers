@@ -56,6 +56,62 @@ Basic help:
 ./tls_sweeper.sh -h
 ```
 
+---
+
+## Workflow
+
+Use this quick workflow when you have a pasted, unstructured host list and want to produce a clean TLS assessment with separated outputs for PASS/FAIL/INACTIVE.
+
+1) Clean your host list
+
+- If your file contains bullets, dashes, or other list characters, clean and sort it first with `cleaup.sh` (note the filename):
+
+```bash
+./cleaup.sh -i raw_hosts.txt
+# Produces raw_hosts_sorted.txt
+```
+
+2) Run the TLS assessment
+
+- Use the cleaned list as input to `tls_sweeper.sh`.
+- Example: manual mode with common HTTPS alternates and details (HTML) on FAIL:
+
+```bash
+./tls_sweeper.sh -f raw_hosts_sorted.txt -p 443 -P 8443,4443,3389 -c 16 -E
+# Output CSV: scan_results_YYYYMMDD_HHMMSS.csv
+# Optional detailed reports when -E is used: details/scan_results_YYYYMMDD_HHMMSS/
+```
+
+- Example: discovery mode over a port range:
+
+```bash
+./tls_sweeper.sh -f raw_hosts_sorted.txt -D -R "1-65535" -c 16 -E
+```
+
+3) Parse results into PASS/FAIL/INACTIVE files
+
+- Use `parse_scan.sh` to separate results into three CSVs and optionally organize them into a folder named after your prefix (e.g., an initiative ID):
+
+```bash
+# Parse in-place
+./parse_scan.sh -i scan_results_YYYYMMDD_HHMMSS.csv -f i1497
+
+# Or create a folder named i1497 and move/parse inside it
+./parse_scan.sh -i scan_results_YYYYMMDD_HHMMSS.csv -f i1497 -o
+```
+
+This produces (with header rows retained):
+
+- i1497_active_pass_hosts.csv
+- i1497_fail_hosts.csv
+- i1497_inactive_hosts.csv
+
+Notes
+
+- If your terminal is attached (interactive), you can press `p` (pause), `r` (resume), or `q` (quit) while `tls_sweeper.sh` is running.
+- Use `-E` (or `--details`) to save per-FAIL testssl reports. Reports and logs are placed under `details/scan_results_YYYYMMDD_HHMMSS/`.
+- If you need discovery to be narrower, use `-t 2000` or a curated `-R "443,8443,3389"`.
+
 Manual mode (primary + fallbacks):
 
 ```bash

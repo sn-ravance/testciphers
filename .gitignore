@@ -1,5 +1,20 @@
-bkup/*
-details/*
-*.csv
-*.txt
-*.html
+### Generated artifacts
+# Per-run CSV results
+scan_results_*.csv
+
+# Details output directory (HTML/TXT/LOG reports)
+details/
+!details/.gitkeep
+details/**/*.html
+details/**/*.txt
+details/**/*.log
+
+# testssl direct outputs when run from repo root (e.g., <host>_p<port>-<ts>.html)
+*_p*-*.html
+
+### Backups and logs
+bkup/
+*.log
+
+### macOS noise
+.DS_Store
