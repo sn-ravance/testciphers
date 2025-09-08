@@ -1,3 +1,5 @@
+# Quick Start: see the [Installation](#installation) and [Workflow](#workflow) sections below to get set up and run your first scan.
+
 # TLS Sweeper
 
 TLS Sweeper (`tls_sweeper.sh`) is a fast, portable Bash tool for liveness checks and TLS protocol policy validation across many hosts. It can operate in two modes:
@@ -45,6 +47,57 @@ brew install nmap
 brew install testssl
 # openssl and nc are typically bundled; install as needed
 ```
+
+---
+
+## Installation
+
+Use the cross-platform installer to set up all required tools (nmap, testssl.sh, openssl, nc):
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+- On macOS, this runs `install_macos_tools.sh` (Homebrew-based).
+- On Linux, this runs `install_linux_tools.sh` (apt/dnf/yum/zypper based, with a fallback GitHub clone for `testssl.sh`).
+
+After installation, verify tools with:
+
+```bash
+which nmap testssl.sh openssl nc || true
+```
+
+---
+
+## Run with Docker
+
+You can run the tool inside a container instead of installing dependencies locally.
+
+Build the image and start the compose service:
+
+```bash
+docker compose build
+docker compose run --rm tls-sweeper ./tls_sweeper.sh -h
+```
+
+Examples:
+
+```bash
+# Manual mode with details (-E)
+docker compose run --rm tls-sweeper \
+  ./tls_sweeper.sh -f raw_hosts_sorted.txt -p 443 -P 8443,4443,3389 -c 16 -E
+
+# Discovery mode with a full range
+docker compose run --rm tls-sweeper \
+  ./tls_sweeper.sh -f raw_hosts_sorted.txt -D -R "1-65535" -c 16 -E
+```
+
+Notes:
+
+- The `docker-compose.yml` mounts the repo into `/work` so outputs (CSV, details/) appear on your host.
+- On Linux, the service uses `network_mode: host` for speed and fidelity. On macOS, Docker Desktop doesn’t support host networking; default bridge networking still works for scanning external hosts.
+- If ICMP `ping` is blocked in your environment, the script already falls back to `nmap` host discovery.
 
 ---
 

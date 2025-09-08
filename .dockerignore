@@ -1,0 +1,15 @@
+# Exclude Git and local metadata
+.git
+.gitignore
+.DS_Store
+
+# Exclude generated artifacts
+scan_results_*.csv
+details/
+*_p*-*.html
+*.log
+bkup/
+
+# Node/npm, Python caches (just in case)
+node_modules/
+__pycache__/

@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  tls-sweeper:
+    build: .
+    image: tls-sweeper:latest
+    working_dir: /work
+    volumes:
+      - ./:/work
+    # Network: use host for speed (Linux). On macOS, Docker Desktop doesn't support host mode; omit or use bridge.
+    network_mode: host
+    # Keep container running; override with `docker compose run` to execute commands
+    entrypoint: ["/bin/bash", "-lc"]
+    command: ["echo", "TLS Sweeper container ready. Run: docker compose run --rm tls-sweeper ./tls_sweeper.sh -h"]
